@@ -1,8 +1,10 @@
-import { describe, expect, mock, test } from 'claude-code/testing'
+import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, TurnStepInput } from 'claude-code'
 
 import type { LastPick } from '../types'
+import { INITIAL_GEAR } from './gear'
+import { localDay } from './usage'
 import {
   candidatesFor,
   chipLabel,
@@ -20,6 +22,7 @@ import {
 const PLUGIN = 'vites'
 const OPTIONS = ['Default (recommended)', 'fable', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku']
 const ZERO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+const SOME = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 }
 const PRESENTATION = { isFullscreen: false, columns: 100 }
 const USAGE = 'Komutlar: aç, kapat, durum, tavan, günlük, rapor.'
 
@@ -29,45 +32,47 @@ type World = {
   asked: number
   sent: TurnStepInput['effort'][]
   saved: Record<string, unknown>
+  store: Map<string, unknown>
+}
+
+type Setup = {
+  model: string
+  answer?: string
+  store?: Record<string, unknown>
+  refuse?: string
+  isBroken?: boolean
+  picked?: string
+  writes?: string[]
+  usage?: typeof ZERO
+  failKey?: string
 }
 
 /**
  * Stands in for the engine beneath the mod: the /config model row, the quick check, the store, the requests,
  * the saved effort. `picked` is what the bare /effort menu chooses; left out, the menu is cancelled.
+ * `answer` is read on each call, so a test may change it between prompts. `usage` is what each request and
+ * each quick check reports; left out, requests report none. `failKey` is a store key whose writes throw.
+ * The store is the world's own map, so a test can read what the mod kept; `writes` notes each write to
+ * the status bar's effort.
  */
-function world(
-  on: On,
-  setup: {
-    model: string
-    answer?: string
-    store?: Record<string, unknown>
-    refuse?: string
-    isBroken?: boolean
-    picked?: string
-    writes?: string[]
-  },
-): World {
-  const seen: World = { model: setup.model, sets: [], asked: 0, sent: [], saved: { effortLevel: 'xhigh' } }
+function world(on: On, setup: Setup): World {
+  const kept = new Map(Object.entries(setup.store ?? {}))
+  const seen: World = { model: setup.model, sets: [], asked: 0, sent: [], saved: { effortLevel: 'xhigh' }, store: kept }
+  const log = setup.writes ?? []
 
-  if (setup.writes === undefined) {
-    mock.store(on, setup.store ?? {})
-  } else {
-    // A store of its own that also notes each write to the status bar's effort.
-    const kept = new Map(Object.entries(setup.store ?? {}))
-    const log = setup.writes
-    on('store.get', ($, e) => ({ value: kept.get(e.key) }))
-    on('store.keys', () => ({ value: [...kept.keys()] }))
-    on('store.set', ($, e) => {
-      kept.set(e.key, e.value)
-      if (e.key === 'effort') log.push(`set ${String(e.value)}`)
-      return { value: undefined }
-    })
-    on('store.delete', ($, e) => {
-      kept.delete(e.key)
-      if (e.key === 'effort') log.push('delete')
-      return { value: undefined }
-    })
-  }
+  on('store.get', ($, e) => ({ value: kept.get(e.key) }))
+  on('store.keys', () => ({ value: [...kept.keys()] }))
+  on('store.set', ($, e) => {
+    if (e.key === setup.failKey) throw new Error('disk full')
+    kept.set(e.key, e.value)
+    if (e.key === 'effort') log.push(`set ${String(e.value)}`)
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    kept.delete(e.key)
+    if (e.key === 'effort') log.push('delete')
+    return { value: undefined }
+  })
   on('config.list', () => {
     if (setup.isBroken === true) throw new Error('settings unreadable')
     const row = {
@@ -89,18 +94,22 @@ function world(
   })
   on('model.complete', () => {
     seen.asked += 1
+    const usage = setup.usage ?? ZERO
     return {
       value:
         setup.answer === undefined
-          ? { isAnswered: false as const, reason: 'aborted' as const, usage: ZERO }
-          : { isAnswered: true as const, text: setup.answer, usage: ZERO },
+          ? { isAnswered: false as const, reason: 'aborted' as const, usage }
+          : { isAnswered: true as const, text: setup.answer, usage },
     }
   })
   on('session.model', () => ({ value: seen.model }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'vites' } }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('turn.step', async function* ($, e) {
     seen.sent.push(e.effort)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+    const usage = setup.usage === undefined ? null : { ...setup.usage, model: e.model }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage }
   })
   on('settings.read', () => ({ value: seen.saved }))
   on('command.run', { command: 'effort' }, ($, e) => {
@@ -328,7 +337,7 @@ describe('the command words', () => {
       const after = await $.command.run(command('durum'))
 
       expect(answer.text).toBe('Vites açık. Kapatınca sonnet geri gelir.')
-      expect(after.text).toBe('Vites açık. Model sonnet. Kapatınca sonnet geri gelir.')
+      expect(after.text).toBe('Vites açık. Model sonnet. Tavan opus. Kapatınca sonnet geri gelir.')
       expect(seen.sets).toEqual([])
     })
   }
@@ -350,7 +359,7 @@ describe('the command words', () => {
     const after = await $.command.run(command('durum'))
 
     expect(answer.text).toBe(`Vites "xyz" komutunu bilmiyor. ${USAGE} Hiçbir şey değişmedi.`)
-    expect(after.text).toBe('Vites açık. Model opus. Kapatınca sonnet geri gelir.')
+    expect(after.text).toBe('Vites açık. Model opus. Tavan opus. Kapatınca sonnet geri gelir.')
     expect(seen.sets).toEqual([])
   })
 })
@@ -522,7 +531,7 @@ describe('sending the effort with the model', () => {
     const answer = await $.command.run(command('durum'))
 
     expect(answer.text).toBe(
-      'Vites açık. Model sonnet. Son seçim: 2. vites · sonnet · orta (küçük model seçti). Kapatınca opus geri gelir.',
+      'Vites açık. Model sonnet. Son seçim: 2. vites · sonnet · orta (küçük model seçti). Tavan opus. Kapatınca opus geri gelir.',
     )
   })
 
@@ -533,8 +542,242 @@ describe('sending the effort with the model', () => {
     const answer = await $.command.run(command('durum'))
 
     expect(answer.text).toBe(
-      'Vites açık. Model haiku. Son seçim: 1. vites · haiku · düşük (kelimelerden tahmin). Kapatınca opus geri gelir.',
+      'Vites açık. Model haiku. Son seçim: 1. vites · haiku · düşük (kelimelerden tahmin). Tavan opus. Kapatınca opus geri gelir.',
     )
+  })
+})
+
+const BIG = 'Plan and carry out a migration of every service to the new queue'
+const LIGHT = 'Translate this paragraph into French for the newsletter'
+
+type Entry = { source: string; flags: string[] }
+
+describe('the cost ceiling', () => {
+  test('an automatic strongest pick stops at opus by default and is marked capped', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strongest xhigh', store: { enabled: true } })
+
+    await $.prompt.submit(typed(BIG))
+    const journal = seen.store.get('journal') as Entry[]
+    const after = await $.command.run(command('durum'))
+
+    expect(seen.sets).toEqual(['opus'])
+    expect(journal[0]?.flags).toContain('capped')
+    expect(after.text).toContain('tavana takıldı')
+  })
+
+  test('tavan yok lifts the ceiling, so strongest reaches fable', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strongest xhigh', store: { enabled: true } })
+
+    const answer = await $.command.run(command('tavan yok'))
+    await $.prompt.submit(typed(BIG))
+
+    expect(seen.store.get('ceiling')).toBe('yok')
+    expect(answer.text).toContain('fable')
+    expect(seen.sets).toEqual(['fable'])
+  })
+
+  test('tavan alone names the ceiling, an unknown word changes nothing', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', store: { enabled: true } })
+
+    const bare = await $.command.run(command('tavan'))
+    const bad = await $.command.run(command('tavan banana'))
+    expect(seen.store.has('ceiling')).toBe(false)
+    const set = await $.command.run(command('tavan Sonnet'))
+
+    expect(bare.text).toBe('Tavan opus. Otomatik seçim bunun üstüne çıkmaz; etiketler çıkabilir.')
+    expect(bad.text).toBe('Vites "banana" tavanını bilmiyor. Tavan haiku, sonnet, opus, fable veya yok olabilir. Hiçbir şey değişmedi.')
+    expect(set.text).toBe('Tavan sonnet. Otomatik seçim bunun üstüne çıkmaz; etiketler çıkabilir.')
+    expect(seen.store.get('ceiling')).toBe('sonnet')
+  })
+})
+
+describe('delayed downshift', () => {
+  test('two light picks after a strong one are held; the third drops', async ($, on) => {
+    const setup: Setup = { model: 'sonnet', answer: 'strong high', store: { enabled: true } }
+    const seen = world(on, setup)
+
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    setup.answer = 'small low'
+    await $.prompt.submit(typed(LIGHT))
+    await step($, { model: 'claude-opus-5-5', effort: 'medium' })
+    const held = await $.command.run(command('durum'))
+    await $.prompt.submit(typed(LIGHT))
+    expect(seen.sets).toEqual(['opus'])
+    await $.prompt.submit(typed(LIGHT))
+
+    expect(seen.sets).toEqual(['opus', 'haiku'])
+    expect(seen.sent).toEqual(['high'])
+    expect(held.text).toContain('tutuluyor')
+  })
+
+  test('kapat then aç, and a new session, start the hold over', async ($, on) => {
+    const setup: Setup = { model: 'sonnet', answer: 'strong high', store: { enabled: true, previous: 'sonnet' } }
+    const seen = world(on, setup)
+    const streak = () => (seen.store.get('gear') as { streak: unknown[] }).streak.length
+
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    setup.answer = 'small low'
+    await $.prompt.submit(typed(LIGHT))
+    expect(streak()).toBe(1)
+
+    await $.command.run(command('kapat'))
+    await $.command.run(command('aç'))
+    expect(seen.store.get('gear')).toEqual(INITIAL_GEAR)
+
+    setup.answer = 'strong high'
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    setup.answer = 'small low'
+    await $.prompt.submit(typed(LIGHT))
+    expect(streak()).toBe(1)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    expect(seen.store.get('gear')).toEqual(INITIAL_GEAR)
+  })
+})
+
+describe('gear tags', () => {
+  test('a model tag skips the quick check, sets the model and leaves the tag out of the text', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'small low', store: { enabled: true } })
+
+    const result = await $.prompt.submit(typed('#fable büyük refactor'))
+    const after = await $.command.run(command('durum'))
+
+    expect(seen.asked).toBe(0)
+    expect(seen.sets).toEqual(['fable'])
+    expect(result.text).toBe('büyük refactor')
+    expect(after.text).toContain('Vites açık.')
+    expect(after.text).toContain('etiket')
+  })
+
+  test('a prompt that is only a tag switches the model and goes through unchanged', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', store: { enabled: true } })
+
+    const result = await $.prompt.submit(typed('#opus'))
+
+    expect(seen.sets).toEqual(['opus'])
+    expect(result.text).toBe('#opus')
+  })
+
+  test('tags are plain text while Vites is off', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strong high' })
+
+    const result = await $.prompt.submit(typed('#opus test et'))
+
+    expect(seen.sets).toEqual([])
+    expect(seen.asked).toBe(0)
+    expect(result.text).toBe('#opus test et')
+  })
+
+  test('an effort tag alone fixes the effort and still asks for the level', async ($, on) => {
+    const seen = world(on, { model: 'opus', answer: 'small low', store: { enabled: true } })
+
+    const result = await $.prompt.submit(typed('#yüksek şu hatayı düzelt'))
+    await step($, { model: 'claude-haiku-5-5', effort: 'medium' })
+
+    expect(seen.asked).toBe(1)
+    expect(seen.sets).toEqual(['haiku'])
+    expect(seen.sent).toEqual(['high'])
+    expect(result.text).toBe('şu hatayı düzelt')
+  })
+
+  test('a tagged gear holds above the ceiling until it drops', async ($, on) => {
+    const setup: Setup = { model: 'sonnet', answer: 'small low', store: { enabled: true } }
+    const seen = world(on, setup)
+
+    await $.prompt.submit(typed('#fable büyük refactor'))
+    await $.prompt.submit(typed(LIGHT))
+    await $.prompt.submit(typed(LIGHT))
+    expect(seen.sets).toEqual(['fable'])
+    await $.prompt.submit(typed(LIGHT))
+
+    expect(seen.sets).toEqual(['fable', 'haiku'])
+  })
+})
+
+describe('the pick journal', () => {
+  test('each sorted prompt adds an entry with its source; günlük lists the newest', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strong high', store: { enabled: true } })
+
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    await $.prompt.submit(typed('#haiku ' + LIGHT))
+    const journal = seen.store.get('journal') as Entry[]
+    const one = await $.command.run(command('günlük 1'))
+    const all = await $.command.run(command('gunluk'))
+
+    expect(journal.map(entry => entry.source)).toEqual(['classifier', 'tag'])
+    expect(one.text.split('\n')).toHaveLength(1)
+    expect(one.text).toContain('haiku')
+    expect(all.text.split('\n')).toHaveLength(2)
+  })
+
+  test('a journal write that fails leaves the switch made and the prompt on its way', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strong high', store: { enabled: true }, failKey: 'journal' })
+
+    const result = await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    const after = await $.command.run(command('durum'))
+
+    expect(seen.sets).toEqual(['opus'])
+    expect(result.text).toBe('Debug why the checkout total is off by one cent')
+    expect(after.text).toContain('3. vites · opus')
+  })
+})
+
+describe('the usage book', () => {
+  const today = localDay(new Date())
+
+  test('requests of the main loop and of subagents are counted under their line', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', store: { enabled: true, previous: 'opus' }, usage: SOME })
+
+    await step($, { model: 'claude-sonnet-5-5' })
+    await step($, { model: 'claude-sonnet-5-5', index: 1 })
+    await step($, { model: 'claude-haiku-5-5', agentId: 'agent-1' })
+    const book = seen.store.get('usage') as Record<string, { baseline: string; rows: Record<string, { input: number }> }>
+
+    expect(book[today]?.baseline).toBe('opus')
+    expect(book[today]?.rows['main:sonnet']?.input).toBe(200)
+    expect(book[today]?.rows['subagent:haiku']?.input).toBe(100)
+  })
+
+  test('the quick check is counted as the classifier', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strong high', store: { enabled: true }, usage: SOME })
+
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    const book = seen.store.get('usage') as Record<string, { rows: Record<string, { input: number }> }>
+
+    expect(book[today]?.rows['classifier:haiku']?.input).toBe(100)
+  })
+
+  test('nothing is counted while off, without usage, or for a model on no known line', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', store: { enabled: true }, usage: SOME })
+
+    await step($, { model: 'claude-x-1' })
+    expect(seen.store.has('usage')).toBe(false)
+
+    await $.command.run(command('kapat'))
+    await step($, { model: 'claude-sonnet-5-5' })
+    expect(seen.store.has('usage')).toBe(false)
+  })
+
+  test('a request that reports no usage is left alone', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', store: { enabled: true } })
+
+    await step($, { model: 'claude-sonnet-5-5' })
+
+    expect(seen.store.has('usage')).toBe(false)
+  })
+})
+
+describe('the savings report', () => {
+  test('rapor prices the book, and an unknown period is refused', async ($, on) => {
+    const today = localDay(new Date())
+    const rows = { 'main:haiku': { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } }
+    world(on, { model: 'sonnet', store: { enabled: true, usage: { [today]: { baseline: 'opus', rows } } } })
+
+    const report = await $.command.run(command('rapor'))
+    const bad = await $.command.run(command('rapor yarın'))
+
+    expect(report.text).toContain('$')
+    expect(report.text).toContain('Tasarruf')
+    expect(bad.text).toBe('Vites "yarın" dönemini bilmiyor. Dönem bugün, hafta, ay veya tümü olabilir. Hiçbir şey değişmedi.')
   })
 })
 
