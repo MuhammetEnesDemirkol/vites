@@ -657,6 +657,26 @@ describe('gear tags', () => {
     expect(result.text).toBe('#opus')
   })
 
+  test('a tag followed only by spaces goes through exactly as typed', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', store: { enabled: true } })
+
+    const result = await $.prompt.submit(typed('#opus   '))
+
+    expect(seen.sets).toEqual(['opus'])
+    expect(seen.asked).toBe(0)
+    expect(result.text).toBe('#opus   ')
+  })
+
+  test('a word that names an Object member is plain text and the model stays', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'small low', store: { enabled: true } })
+
+    const result = await $.prompt.submit(typed('#constructor merhaba, bunu açıklar mısın'))
+
+    expect(seen.asked).toBe(1)
+    expect(seen.sets).toEqual(['haiku'])
+    expect(result.text).toBe('#constructor merhaba, bunu açıklar mısın')
+  })
+
   test('tags are plain text while Vites is off', async ($, on) => {
     const seen = world(on, { model: 'sonnet', answer: 'strong high' })
 

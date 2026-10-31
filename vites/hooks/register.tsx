@@ -457,7 +457,7 @@ export const register: Register = on => {
     }
 
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'vites' }, async ($, e) => {
     try {

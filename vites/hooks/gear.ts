@@ -60,14 +60,27 @@ export function parseCeiling(arg: string): Line | null | undefined {
   return LINES.find(line => line === word)
 }
 
-const TAG_LINE: Record<string, Line> = { haiku: 'haiku', sonnet: 'sonnet', opus: 'opus', fable: 'fable' }
-const TAG_EFFORT: Record<string, Effort> = { dusuk: 'low', orta: 'medium', yuksek: 'high', cokyuksek: 'xhigh', maks: 'max' }
+// Maps, not object literals: a word such as "constructor" must not resolve to an Object member.
+const TAG_LINE: ReadonlyMap<string, Line> = new Map<string, Line>([
+  ['haiku', 'haiku'],
+  ['sonnet', 'sonnet'],
+  ['opus', 'opus'],
+  ['fable', 'fable'],
+])
+const TAG_EFFORT: ReadonlyMap<string, Effort> = new Map<string, Effort>([
+  ['dusuk', 'low'],
+  ['orta', 'medium'],
+  ['yuksek', 'high'],
+  ['cokyuksek', 'xhigh'],
+  ['maks', 'max'],
+])
 const TAG_QUICK = 'hizli'
 
 /**
  * The gear tags at the start of a prompt and the text after them. Tags are
- * read on folded text with non-letters dropped (#ÇokYüksek → cokyuksek);
- * reading stops at the first word that is not a tag.
+ * read on folded text with punctuation dropped (#ÇokYüksek → cokyuksek,
+ * "#opus," → opus); digits stay, so #sonnet14 is not a tag. Reading stops at
+ * the first word that is not a tag.
  */
 export function parseTags(text: string): Tags {
   const tags: Tags = { text }
@@ -76,9 +89,9 @@ export function parseTags(text: string): Tags {
   for (;;) {
     const found = rest.match(/^\s*#(\S+)/)
     if (found === null) break
-    const key = fold(found[1] ?? '').replace(/[^a-z]/g, '')
-    const line = TAG_LINE[key]
-    const effort = TAG_EFFORT[key]
+    const key = fold(found[1] ?? '').replace(/[^a-z0-9]/g, '')
+    const line = TAG_LINE.get(key)
+    const effort = TAG_EFFORT.get(key)
 
     if (key === TAG_QUICK) {
       tags.line = 'haiku'

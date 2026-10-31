@@ -76,6 +76,21 @@ describe('tags at the start of a prompt', () => {
   test('an unknown tag is plain text', async () => {
     expect(parseTags('#etiket yok')).toEqual({ text: '#etiket yok' })
   })
+
+  test('an Object member name is not a tag', async () => {
+    expect(parseTags('#constructor merhaba')).toEqual({ text: '#constructor merhaba' })
+    expect(parseTags('#toString bak')).toEqual({ text: '#toString bak' })
+    expect(parseTags('#__proto__ bak')).toEqual({ text: '#__proto__ bak' })
+  })
+
+  test('a tag with digits glued on is not a tag', async () => {
+    expect(parseTags('#sonnet14 x')).toEqual({ text: '#sonnet14 x' })
+    expect(parseTags('#maks2 x')).toEqual({ text: '#maks2 x' })
+  })
+
+  test('trailing punctuation on a tag is dropped', async () => {
+    expect(parseTags('#opus, refactor et')).toEqual({ line: 'opus', text: 'refactor et' })
+  })
 })
 
 describe('ceiling', () => {
