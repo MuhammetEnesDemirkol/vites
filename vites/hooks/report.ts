@@ -55,8 +55,16 @@ export type ReportNumbers = {
   saved: number
   savedPercent: number
   byLine: Partial<Record<Line, { tokens: number; cost: number }>>
+  // The Vites-side cost split by where the requests came from.
+  bySource: Record<UsageSource, number>
   baselines: Line[]
   days: number
+}
+
+const SOURCE_LABEL: Record<UsageSource, string> = {
+  main: 'ana döngü',
+  subagent: 'alt ajanlar',
+  classifier: 'sınıflandırıcı',
 }
 
 function totalTokens(tokens: Tokens): number {
@@ -70,7 +78,16 @@ function totalTokens(tokens: Tokens): number {
  */
 export function computeReport(book: UsageBook, days: string[] | 'all', prices: Record<Line, Price> = PRICES): ReportNumbers {
   const chosen = (days === 'all' ? Object.keys(book) : days).filter(day => book[day] !== undefined).sort()
-  const numbers: ReportNumbers = { withVites: 0, without: 0, saved: 0, savedPercent: 0, byLine: {}, baselines: [], days: chosen.length }
+  const numbers: ReportNumbers = {
+    withVites: 0,
+    without: 0,
+    saved: 0,
+    savedPercent: 0,
+    byLine: {},
+    bySource: { main: 0, subagent: 0, classifier: 0 },
+    baselines: [],
+    days: chosen.length,
+  }
 
   for (const day of chosen) {
     const data = book[day]
@@ -82,6 +99,7 @@ export function computeReport(book: UsageBook, days: string[] | 'all', prices: R
       const [source, line] = key.split(':') as [UsageSource, Line]
       const real = cost(tokens, prices[line])
       numbers.withVites += real
+      numbers.bySource[source] += real
       const seen = numbers.byLine[line] ?? { tokens: 0, cost: 0 }
       numbers.byLine[line] = { tokens: seen.tokens + totalTokens(tokens), cost: seen.cost + real }
 
@@ -116,6 +134,9 @@ export function formatReport(numbers: ReportNumbers, period: Period, priceDate: 
     if (seen !== undefined) lines.push(`  ${line}: ${tokensText(seen.tokens)} token · ${money(seen.cost)}`)
   }
   lines.push(`Vites ile: ${money(numbers.withVites)}`)
+  for (const source of ['main', 'subagent', 'classifier'] as const) {
+    lines.push(`  ${SOURCE_LABEL[source]}: ${money(numbers.bySource[source])}`)
+  }
   lines.push(`Vites olmasaydı: ${money(numbers.without)}`)
   const change = numbers.saved >= 0 ? 'Tasarruf' : 'Ek maliyet'
   lines.push(`${change}: ${money(Math.abs(numbers.saved))} (%${Math.abs(numbers.savedPercent)})`)
@@ -128,6 +149,7 @@ export function formatReport(numbers: ReportNumbers, period: Period, priceDate: 
     'API liste fiyatlarıyla tahmindir; abonelik (Pro/Max) kullanıyorsan bu para değil kullanım limiti karşılığıdır; ' +
       `farklı model farklı token sayısı üretirdi. Fiyat tarihi: ${priceDate}.`,
   )
+  lines.push('Haiku uzun bağlam (100K üstü) tarifesiyle fiyatlandı; tasarruf bir miktar düşük görünebilir.')
 
   return lines.join('\n')
 }

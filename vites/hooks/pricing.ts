@@ -16,15 +16,18 @@ export const PRICE_DATE = '2026-11-01'
  *
  * Explicit in the skill: every input/output price; cache reads for sonnet ($0.20), opus ($0.20) and
  * fable ($0.25); the opus 5-minute cache write ($5).
- * Derived from the skill's rules, since it gives no per-line figure: cache writes for haiku, sonnet
- * and fable at 1.25x input (prompt-caching.md "Cache writes cost 1.25x for 5-minute TTL"); the haiku
- * cache read at 0.1x input (prompt-caching.md "Cache reads cost ~0.1x base input price").
+ * Derived from the skill's rules, since it gives no per-line figure: cache writes for sonnet and
+ * fable at 1.25x input (prompt-caching.md "Cache writes cost 1.25x for 5-minute TTL").
  *
- * haiku is priced at its under-100K-token prompt rate; the skill lists $0.50 / $2.50 above that.
+ * haiku: Claude Haiku 5.5 has two rate cards by prompt length (model-migration.md "Migrating to
+ * Claude Haiku 5.5"): $0.10 / $0.50 up to 100K tokens, $0.50 / $2.50 above; for this model the skill
+ * states cache reads at 0.1x the input rate and 5-minute cache writes at 1.25x. Claude Code sessions
+ * run past 100K and the book keeps daily totals, so the long-context card is used throughout. That
+ * overcharges the short prompts, so the saving the report shows can be slightly understated.
  */
 export const PRICES: Record<Line, Price> = {
-  // Claude Haiku 5.5
-  haiku: { input: 0.1, output: 0.5, cacheWrite: 0.125, cacheRead: 0.01 },
+  // Claude Haiku 5.5, long-context (>100K-token prompt) rate card
+  haiku: { input: 0.5, output: 2.5, cacheWrite: 0.625, cacheRead: 0.05 },
   // Claude Sonnet 5.5
   sonnet: { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
   // Claude Opus 5.5

@@ -141,6 +141,8 @@ describe('usage book', () => {
 describe('prices', () => {
   test('the table covers every line with a checked date and prices a token count per million', async () => {
     expect(PRICE_DATE).toBe('2026-11-01')
+    // Haiku is on its long-context rate card, 5x the short-prompt one, so the saving is never overstated.
+    expect(PRICES.haiku).toEqual({ input: 0.5, output: 2.5, cacheWrite: 0.625, cacheRead: 0.05 })
     for (const line of ['haiku', 'sonnet', 'opus', 'fable'] as const) {
       const price = PRICES[line]
       expect(price.input > 0).toBe(true)
@@ -164,6 +166,7 @@ describe('report numbers', () => {
     expect(numbers.without).toBe(5)
     expect(numbers.saved).toBe(1)
     expect(numbers.savedPercent).toBe(20)
+    expect(numbers.bySource).toEqual({ main: 2, subagent: 1, classifier: 1 })
     expect(numbers.baselines).toEqual(['opus'])
     expect(numbers.days).toBe(1)
     expect(numbers.byLine.sonnet).toEqual({ tokens: 1_000_000, cost: 2 })
@@ -231,6 +234,10 @@ describe('report text', () => {
     expect(text).toContain('abonelik')
     expect(text).toContain('sonnet')
     expect(text).toContain('haiku')
+    expect(text).toContain('ana döngü: $2.00')
+    expect(text).toContain('alt ajanlar: $1.00')
+    expect(text).toContain('sınıflandırıcı: $1.00')
+    expect(text).toContain('Haiku uzun bağlam')
   })
 
   test('names every baseline when the period has more than one', async () => {
