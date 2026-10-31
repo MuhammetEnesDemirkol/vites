@@ -171,9 +171,42 @@ describe('nextGear', () => {
 
   test('a ceiling lowered mid-session pulls the held gear down on the next prompt', async () => {
     const { gear, flags, state } = nextGear(held(STRONG), { pick: EVERYDAY, ceiling: 'sonnet' })
-    expect(gear).toEqual(EVERYDAY)
+    // The pulled-down hold is everyday/high; the equal-level pick's lower effort stays held.
+    const pulled: Gear = { level: 'everyday', effort: 'high' }
+    expect(gear).toEqual(pulled)
     expect(flags).toEqual(['dropped'])
-    expect(state).toEqual({ held: EVERYDAY, streak: [], isTagHeld: false })
+    expect(state).toEqual({ held: pulled, streak: [], isTagHeld: false })
+  })
+
+  test('a ceiling lowered mid-streak caps where a tag-held gear drops to', async () => {
+    // Case A: tag-held fable over an opus ceiling, two strong picks held, then the ceiling goes to haiku.
+    const start: GearState = { held: STRONGEST, streak: [STRONG, STRONG], isTagHeld: true }
+    const { gear, flags, state } = nextGear(start, { pick: SMALL, ceiling: 'haiku' })
+    expect(gear).toEqual({ level: 'small', effort: 'high' })
+    expect(flags).toContain('dropped')
+    expect(flags).toContain('capped')
+    expect(state).toEqual({ held: gear, streak: [], isTagHeld: false })
+  })
+
+  test('a ceiling lowered mid-streak never lets the drop land above it', async () => {
+    // Case B: held strongest with no ceiling, two strong picks held, then the ceiling goes to sonnet.
+    const start: GearState = { held: STRONGEST, streak: [STRONG, STRONG], isTagHeld: false }
+    const { gear, flags, state } = nextGear(start, { pick: SMALL, ceiling: 'sonnet' })
+    expect(gear).toEqual({ level: 'everyday', effort: 'high' })
+    expect(flags).toContain('dropped')
+    expect(flags).toContain('capped')
+    expect(state).toEqual({ held: gear, streak: [], isTagHeld: false })
+  })
+
+  test('at an equal level a lower effort is held and a higher one is taken', async () => {
+    const lower = nextGear(held(STRONG), { pick: { level: 'strong', effort: 'medium' }, ceiling: 'opus' })
+    expect(lower.gear).toEqual(STRONG)
+    expect(lower.state.held).toEqual(STRONG)
+    expect(lower.state.streak).toEqual([])
+
+    const higher = nextGear(held({ level: 'strong', effort: 'medium' }), { pick: { level: 'strong', effort: 'xhigh' }, ceiling: 'opus' })
+    expect(higher.gear).toEqual({ level: 'strong', effort: 'xhigh' })
+    expect(higher.state.held).toEqual({ level: 'strong', effort: 'xhigh' })
   })
 
   test('a fixed effort is sent as is and not held', async () => {

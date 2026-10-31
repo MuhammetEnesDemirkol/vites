@@ -20,11 +20,12 @@ export const DEFAULT_CEILING: Line = 'opus'
  * `mid-conversation-output-config-2026-07-01` beta, which Vites cannot send:
  * it only sets the engine's top-level effort in `turn.step`. So an effort
  * change costs the whole conversation cache, and effort is held like the model:
- * while a lower pick is held, the held effort is sent; it drops with the level.
- * (A pick at an equal or higher level switches the model anyway, so its own
- * effort is taken at once.)
+ * while a lower pick is held, the held effort is sent; at an equal level the
+ * effort may rise at once but a lower one is held; it drops with the level.
+ * (A pick at a higher level switches the model anyway, so its own effort is
+ * taken.) When false, an equal-level pick's effort is sent as classified.
  */
-export const HOLD_EFFORT = true
+export const HOLD_EFFORT: boolean = true
 
 export type Gear = { level: Level; effort: Effort }
 
@@ -134,10 +135,17 @@ function decideAuto(state: GearState, input: GearInput): GearDecision {
     : { level: capLevel(state.held.level, input.ceiling), effort: state.held.effort }
   if (held.level !== state.held.level) flags.push('dropped')
 
-  // Levels decide; at an equal level the effort of this prompt is taken, and
-  // while a lower pick is held the held effort rides along with the held model.
-  if (rank(pick.level) >= rank(held.level)) {
+  // Levels decide. A higher level is taken with its own effort (the model
+  // changes anyway); at an equal level a lower effort is held while
+  // HOLD_EFFORT, since an effort change alone would still cost the cache.
+  if (rank(pick.level) > rank(held.level)) {
     return { gear: pick, state: { held: pick, streak: [], isTagHeld: false }, flags }
+  }
+  if (rank(pick.level) === rank(held.level)) {
+    const effort = HOLD_EFFORT ? higherEffort(held.effort, pick.effort) : pick.effort
+    const gear: Gear = { level: pick.level, effort }
+
+    return { gear, state: { held: gear, streak: [], isTagHeld: false }, flags }
   }
 
   const streak = [...state.streak, pick]
@@ -147,7 +155,11 @@ function decideAuto(state: GearState, input: GearInput): GearDecision {
     return { gear: held, state: { held, streak, isTagHeld: state.isTagHeld }, flags }
   }
 
-  const target = dropTarget(streak)
+  // Streak entries were capped under the ceiling of their own prompt, so the
+  // target is capped again under today's ceiling in case it was lowered since.
+  const highest = dropTarget(streak)
+  const target: Gear = { level: capLevel(highest.level, input.ceiling), effort: highest.effort }
+  if (target.level !== highest.level && !flags.includes('capped')) flags.push('capped')
   if (!flags.includes('dropped')) flags.push('dropped')
 
   return { gear: target, state: { held: target, streak: [], isTagHeld: false }, flags }
@@ -156,6 +168,10 @@ function decideAuto(state: GearState, input: GearInput): GearDecision {
 /** The highest level in the streak, with the effort of the latest pick at that level. */
 function dropTarget(streak: Gear[]): Gear {
   return streak.reduce((best, pick) => (rank(pick.level) >= rank(best.level) ? pick : best))
+}
+
+function higherEffort(a: Effort, b: Effort): Effort {
+  return EFFORTS.indexOf(a) >= EFFORTS.indexOf(b) ? a : b
 }
 
 function rank(level: Level): number {
