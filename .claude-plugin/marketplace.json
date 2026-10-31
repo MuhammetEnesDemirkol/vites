@@ -1,0 +1,14 @@
+{
+  "name": "demirkol",
+  "owner": {
+    "name": "Muhammet Enes Demirkol"
+  },
+  "description": "Vites: her prompt için Claude Code modelini ve düşünme eforunu seçer",
+  "plugins": [
+    {
+      "name": "vites",
+      "source": "./vites",
+      "description": "Her prompt için modeli ve eforu otomatik seçer: hızlı işler küçük modele, zor işler güçlü modele. Türkçe arayüz, maliyet tavanı, geç vites düşürme, seçim günlüğü ve tasarruf raporu."
+    }
+  ]
+}
