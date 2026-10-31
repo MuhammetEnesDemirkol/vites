@@ -9,10 +9,12 @@ Her prompt için Claude Code modelini ve düşünme eforunu otomatik seçer. Hı
 Plugin destekli Claude Code gerekir. Model Gear kuruluysa önce kaldır; ikisi aynı `model` ayarı için yarışır.
 
 ```
-claude plugin marketplace add C:\Users\muham\.claude\mods\vites
+claude plugin marketplace add MuhammetEnesDemirkol/vites
 claude plugin uninstall model-gear@claude-model-gear
 claude plugin install vites@demirkol
 ```
+
+Repo özelse önce `gh auth login` ile erişimi olan hesapla giriş yap. Yerel bir kopyadan kurmak için ilk satırda repo adı yerine klasör yolunu ver (örn. `claude plugin marketplace add C:\yol\vites`).
 
 Yeni bir oturum aç. Vites her yeni oturumda kendiliğinden açılır; alt barda `Vites: Açık` çipi görünür. Çipe basınca açılıp kapanır.
 
@@ -57,7 +59,7 @@ Otomatik seçim tavanın üstüne çıkmaz; varsayılan tavan `opus`. Tavana tak
 
 ### Geç vites düşürme
 
-Oturum içinde bir "tutulan vites" vardır. Yeni seçim tutulandan yüksek veya eşitse hemen o vitese geçilir. Düşükse model değişmez, hafif seçim sayılır; üst üste 3 hafif seçimden sonra bu üçünün en yükseğine düşülür. Araya daha güçlü bir seçim girerse sayaç sıfırlanır. Böylece görev ortasındaki "şimdi şu dosyaya da bak" gibi kısa bir takip modeli düşürmez ve prompt önbelleği korunur.
+Oturum içinde bir "tutulan vites" vardır. Yeni seçim tutulandan yüksek veya eşitse hemen o vitese geçilir. Düşükse model değişmez, hafif seçim sayılır; üst üste 3. hafif seçimde (ilk ikisi tutulan viteste çalışır) bu üçünün en yükseğine düşülür. Araya daha güçlü bir seçim girerse sayaç sıfırlanır. Böylece görev ortasındaki "şimdi şu dosyaya da bak" gibi kısa bir takip modeli düşürmez ve prompt önbelleği korunur.
 
 Efor da modelle birlikte tutulur: aynı viteste daha yüksek efor hemen alınır, daha düşüğü tutulur ve modelle birlikte düşer. Sebebi: efor değişikliği de prompt önbelleğini bozar.
 
@@ -78,7 +80,7 @@ Kurallar:
 - Etiketler birleştirilebilir: `#opus #maks şu modülü yeniden yaz`.
 - ASCII yazım da geçer: `#dusuk`, `#yuksek`, `#cokyuksek`, `#hizli`. Büyük/küçük harf fark etmez.
 - Yalnızca prompt'un başındaki etiketler okunur; ilk etiket olmayan kelimede okuma durur. `merhaba #opus` etiket değildir. `#sonnet14` ve `#maks2` de etiket değildir.
-- Model etiketi tutulan vitesi oraya ayarlar ve sayacı sıfırlar; sonrası normal geç düşürme kuralıyla yürür. `#fable <büyük iş>` ardından gelen hafif prompt'lar 3 seçim boyunca fable'da kalır.
+- Model etiketi tutulan vitesi oraya ayarlar ve sayacı sıfırlar; sonrası normal geç düşürme kuralıyla yürür. `#fable <büyük iş>` ardından gelen ilk iki hafif prompt fable'da kalır, üçüncüde düşülür.
 - Etiketler modele giden metinden çıkarılır. Prompt yalnızca etiketten oluşuyorsa olduğu gibi gider (boş prompt reddedilir).
 - Etiketler yalnızca Vites açıkken işlenir; kapalıyken düz metin olarak modele gider ve model değişmez.
 - Etiketle yapılan model değişimi Vites'i kapatmaz.
