@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On, TurnStepInput } from 'claude-code'
+import type { AgentInfo, On, TurnStepInput } from 'claude-code'
 
-import type { LastPick } from '../types'
 import { INITIAL_GEAR } from './gear'
 import { localDay } from './usage'
 import {
@@ -16,7 +15,6 @@ import {
   namedEffort,
   parseEffort,
   parseLevel,
-  statusLine,
 } from './logic'
 
 const PLUGIN = 'vites'
@@ -33,6 +31,7 @@ type World = {
   sent: TurnStepInput['effort'][]
   saved: Record<string, unknown>
   store: Map<string, unknown>
+  pins: (string | undefined)[]
 }
 
 type Setup = {
@@ -45,6 +44,8 @@ type Setup = {
   writes?: string[]
   usage?: typeof ZERO
   failKey?: string
+  agents?: Pick<AgentInfo, 'id' | 'description' | 'type' | 'status' | 'name'>[]
+  cwd?: string
 }
 
 /**
@@ -57,7 +58,7 @@ type Setup = {
  */
 function world(on: On, setup: Setup): World {
   const kept = new Map(Object.entries(setup.store ?? {}))
-  const seen: World = { model: setup.model, sets: [], asked: 0, sent: [], saved: { effortLevel: 'xhigh' }, store: kept }
+  const seen: World = { model: setup.model, sets: [], asked: 0, sent: [], saved: { effortLevel: 'xhigh' }, store: kept, pins: [] }
   const log = setup.writes ?? []
 
   on('store.get', ($, e) => ({ value: kept.get(e.key) }))
@@ -104,6 +105,13 @@ function world(on: On, setup: Setup): World {
   })
   on('session.model', () => ({ value: seen.model }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: setup.cwd ?? '/proj' }))
+  on('agent.list', () => ({ value: setup.agents ?? [] }))
+  on('tool.call', () => ({ result: {} }))
+  on('ui.status', ($, e) => {
+    seen.pins.push(e.text)
+    return { value: undefined }
+  })
   on('command.register', () => ({ value: { command: 'vites' } }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('turn.step', async function* ($, e) {
@@ -801,25 +809,6 @@ describe('the savings report', () => {
   })
 })
 
-describe('the line under the prompt', () => {
-  test('names the gear, model and effort of the last prompt while on, and clears when off', () => {
-    const pick: LastPick = {
-      level: 'strong',
-      effort: 'high',
-      model: 'opus',
-      isGuess: true,
-      gear: 3,
-      source: 'keywords',
-      flags: [],
-    }
-
-    expect(statusLine(true, pick)).toBe('3. vites · opus · yüksek')
-    expect(statusLine(true, { ...pick, level: 'strongest', effort: 'xhigh', model: 'fable', gear: 4 })).toBe('4. vites · fable · çok yüksek')
-    expect(statusLine(true, null)).toBeUndefined()
-    expect(statusLine(false, pick)).toBeUndefined()
-  })
-})
-
 describe('the status bar chip', () => {
   test('says only whether it is on, in a wide and a narrow footer', () => {
     expect(chipLabel(true, 120)).toBe(' Vites: Açık ')
@@ -856,4 +845,170 @@ describe('the status bar chip', () => {
       expect(seen.model).toBe('sonnet')
     })
   }
+})
+
+const ABOVE = {
+  plugin: PLUGIN,
+  surface: 'terminal' as const,
+  component: 'AbovePrompt' as const,
+  props: {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 10,
+    bodyColumns: 100,
+    scroll: { offset: 0, bodyRows: 10 },
+    view: {},
+  },
+  viewport: { columns: 100, rows: 30 },
+}
+
+/** The words of every row the block drew, one string each. */
+async function rows(ui: Awaited<ReturnType<Engine['ui']['mount']>>): Promise<string[]> {
+  // The row's Text and its parts all match; only the whole row holds a separator.
+  const found = await ui.findAll({ type: 'Text', text: /^(●|↳).* · / })
+
+  return found.map(node => node.text ?? '')
+}
+
+describe('the last pick across sessions', () => {
+  const PICK = { level: 'strong', effort: 'high', model: 'opus', isGuess: false, gear: 3, source: 'classifier', flags: [] }
+
+  test('a pick is kept in the store', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strong high', store: { enabled: true } })
+
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+
+    expect(seen.store.get('last')).toMatchObject({ level: 'strong', effort: 'high', gear: 3 })
+  })
+
+  test('a stored pick is read back on session start, so the first request already has its effort', async ($, on) => {
+    const seen = world(on, { model: 'opus', store: { enabled: true, last: PICK } })
+
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await step($, { effort: 'medium' })
+
+    expect(seen.sent).toEqual(['high'])
+  })
+
+  const GARBAGE: [string, unknown][] = [
+    ['a bare word', 'high'],
+    ['a number', 7],
+    ['a list', []],
+    ['an effort that does not exist', { ...PICK, effort: 'wild' }],
+    ['a gear that does not exist', { ...PICK, gear: 9 }],
+    ['a flag that does not exist', { ...PICK, flags: ['nope'] }],
+    ['a pick with fields missing', { effort: 'high' }],
+  ]
+
+  for (const [name, garbage] of GARBAGE) {
+    test(`${name} in the store sends no rewrite`, async ($, on) => {
+      const seen = world(on, { model: 'opus', store: { enabled: true, last: garbage } })
+
+      await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+      await step($, { effort: 'medium' })
+
+      expect(seen.sent).toEqual(['medium'])
+    })
+  }
+
+  test('turning off forgets the stored pick', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strong high', store: { enabled: true, previous: 'sonnet' } })
+
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    expect(seen.store.has('last')).toBe(true)
+    await $.command.run(command('kapat'))
+
+    expect(seen.store.has('last')).toBe(false)
+  })
+})
+
+describe('the block above the prompt', () => {
+  test('session start clears the old pinned line and nothing is pinned afterwards', async ($, on) => {
+    const seen = world(on, { model: 'sonnet', answer: 'strong high', store: { enabled: true } })
+
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+
+    expect(seen.pins).toEqual([undefined])
+  })
+
+  test('the main row shows the model and the effort Vites sent, the gear and the target', async ($, on) => {
+    world(on, { model: 'sonnet', answer: 'strong high', store: { enabled: true }, cwd: '/proj' })
+    await $.prompt.submit(typed('Debug why the checkout total is off by one cent'))
+    await step($, { model: 'claude-opus-5-5[1m]', effort: 'medium' })
+    await $.tool.call({ tool: 'Read', file_path: '/proj/src/app.ts' })
+
+    const ui = await $.ui.mount(ABOVE)
+
+    expect(await rows(ui)).toEqual(['● Ana  Opus 5.5 · yüksek · 3. vites › src/app.ts'])
+    await ui.unmount()
+  })
+
+  test('a model without an effort shows varsayılan, and Bash clears the target', async ($, on) => {
+    world(on, { model: 'sonnet', store: { enabled: true } })
+    await step($, { model: 'claude-haiku-5-5', effort: undefined })
+    await $.tool.call({ tool: 'Read', file_path: '/proj/a.ts' })
+    await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+    const ui = await $.ui.mount(ABOVE)
+
+    expect(await rows(ui)).toEqual(['● Ana  Haiku 5.5 · varsayılan'])
+    await ui.unmount()
+  })
+
+  test('a running subagent gets a row of its own; a finished one and an unknown tool do not', async ($, on) => {
+    world(on, {
+      model: 'opus',
+      answer: 'small low',
+      store: { enabled: true },
+      agents: [
+        { id: 'a1', description: 'Tarama', type: 'Explore', status: 'running' },
+        { id: 'a2', description: 'Eski iş', type: 'general-purpose', status: 'completed' },
+      ],
+    })
+    await $.prompt.submit(typed('Summarize this changelog into three bullet points'))
+    await step($, { model: 'claude-opus-5-5', effort: 'high' })
+    await step($, { model: 'claude-haiku-5-5', effort: 'high', agentId: 'a1' })
+    await step($, { model: 'claude-sonnet-5-5', effort: 'high', agentId: 'a2' })
+    await $.tool.call({ tool: 'Grep', pattern: 'TODO', path: '/proj/src', agentId: 'a1' })
+    await $.tool.call({ tool: 'WebFetch', url: 'https://example.com', agentId: 'a1' })
+
+    const ui = await $.ui.mount(ABOVE)
+
+    expect(await rows(ui)).toEqual(['● Ana     Opus 5.5 · düşük · 1. vites', '↳ Tarama  Haiku 5.5 · düşük › src'])
+    await ui.unmount()
+  })
+
+  test('a survey is never covered', async ($, on) => {
+    world(on, { model: 'sonnet', store: { enabled: true } })
+    // Stands for the engine's own band, which a survey keeps.
+    on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: 'anket' }))
+    await step($, { model: 'claude-opus-5-5', effort: 'high' })
+
+    const ui = await $.ui.mount({ ...ABOVE, props: { ...ABOVE.props, hasSurvey: true } })
+
+    expect(await rows(ui)).toEqual([])
+    expect(await ui.find({ type: 'Text', text: 'anket' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the first step of a turn drops the old target; the records of a gone subagent are dropped', async ($, on) => {
+    const setup: Setup = {
+      model: 'opus',
+      store: { enabled: true },
+      agents: [{ id: 'a1', description: 'Tarama', type: 'Explore', status: 'running' }],
+    }
+    world(on, setup)
+    await step($, { model: 'claude-opus-5-5', effort: 'high' })
+    await step($, { model: 'claude-haiku-5-5', effort: 'high', agentId: 'a1' })
+    await $.tool.call({ tool: 'Read', file_path: '/proj/a.ts' })
+    await step($, { model: 'claude-opus-5-5', effort: 'high', index: 1 })
+    const ui = await $.ui.mount(ABOVE)
+    expect(await rows(ui)).toEqual(['● Ana     Opus 5.5 · yüksek › a.ts', '↳ Tarama  Haiku 5.5 · yüksek'])
+
+    setup.agents = [{ id: 'a1', description: 'Tarama', type: 'Explore', status: 'completed' }]
+    await step($, { model: 'claude-opus-5-5', effort: 'high', index: 0, turnId: 'turn-2' })
+    expect(await rows(ui)).toEqual(['● Ana  Opus 5.5 · yüksek'])
+    await ui.unmount()
+  })
 })

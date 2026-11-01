@@ -32,7 +32,22 @@ Yeni bir oturum aç. Vites her yeni oturumda kendiliğinden açılır; alt barda
 
 Argümanlar Türkçe harf farkı gözetmeden okunur: `ac`, `aç` ve İngilizce `on` aynı şeydir; `gunluk`, `tumu`, `hepsi` de geçer.
 
-Her seçimden sonra prompt'un altında gittiği vites, model ve efor yazar, örneğin `3. vites · opus · yüksek`.
+## Prompt'un üstündeki blok
+
+Prompt'un hemen üstünde ana döngünün ve çalışan her alt ajanın o an hangi modelde, hangi eforda olduğu ve hangi dosya ya da klasörle uğraştığı görünür. Efor olarak Vites'in isteğe gerçekten verdiği değer yazılır (kendi seçimini yazdıysa onu, yazmadıysa motorun getirdiğini):
+
+```
+● Ana       Opus 5.5 · yüksek · 3. vites › src/hooks/register.tsx
+↳ Tarama    Haiku 5.5 · düşük › src
+```
+
+- Ana satır ilk istekten sonra hep görünür. `N. vites` yalnızca Vites açıkken ve bir seçim yapılmışsa yazılır. `› hedef` yalnızca bir dosya aracı (Read, Edit, Write, NotebookEdit, Glob, Grep) çağrılmışsa yazılır; Bash hedefi siler. Yeni bir turun ilk isteği eski hedefi siler.
+- Alt ajan satırı yalnızca ajan beklemede, çalışırken ya da yanıt beklerken görünür; bitenin kaydı silinir. Etiket ajanın adı, yoksa açıklaması, yoksa türüdür.
+- Model adı kimlikten okunur: `claude-opus-5-5[1m]` → `Opus 5.5`, `opus` → `Opus`. Efor modelde yoksa `varsayılan` yazar.
+- Hedef oturumun klasörüne göre kısa yazılır; klasör dışındaysa olduğu gibi, en çok yaklaşık 40 karakter (soldan `…` ile kesilir).
+- Renkler temanın anahtarlarından gelir (`claude`, `suggestion`, `text`, `inactive`), sabit renk yoktur. Bir anket açıkken blok çekilir.
+
+Önceki sürümün prompt altına sabitlediği `3. vites · opus · yüksek` satırı kaldırıldı; yeni oturumda eski sabitleme temizlenir.
 
 ## Nasıl seçer
 
@@ -110,7 +125,7 @@ Rakamlar **tahmindir**: API liste fiyatlarıyla hesaplanır (fiyat tarihi kodda 
 
 Yazdığın her prompt'un ilk 6.000 karakteri, yalnızca sınıflandırmak için, kurulumundaki en küçük modele gider. Normal Claude Code oturumunu ve hesabını kullanır; başka bir servis yoktur.
 
-Değiştirdiği `model` ayarı dışında sakladıkları: açık/kapalı durumu, açmadan önceki model, son uygulanan model ve efor, tavan, tutulan vites, seçim günlüğü (her işlenen prompt'un ilk 120 karakteriyle) ve günlük token toplamları. Hepsi Claude Code'un eklenti deposunda, yalnızca bu makinede kalır.
+Değiştirdiği `model` ayarı dışında sakladıkları: açık/kapalı durumu, açmadan önceki model, son uygulanan model ve efor, son seçim (yeni oturumun ilk istekleri de o eforla gitsin diye; Vites kapanınca silinir), tavan, tutulan vites, seçim günlüğü (her işlenen prompt'un ilk 120 karakteriyle) ve günlük token toplamları. Hepsi Claude Code'un eklenti deposunda, yalnızca bu makinede kalır. Üstteki bloğun kayıtları (hangi döngü hangi modelde, hangi dosyada) yalnızca bellekte tutulur, hiçbir yere yazılmaz.
 
 ## Geliştirme
 
@@ -126,7 +141,8 @@ Testler `claude-code/testing` modülünü kullanır; bu modül yalnızca `claude
 | Dosya | İş |
 | --- | --- |
 | `vites/hooks/hooks.json` | Tek modülü (`register.tsx`) bildirir. |
-| `vites/hooks/register.tsx` | Hook'lar, `/vites` komutu, alt bar çipi, prompt altı durum satırı. Motorla konuşan tek dosya. |
+| `vites/hooks/register.tsx` | Hook'lar, `/vites` komutu, alt bar çipi, prompt üstü blok. Motorla konuşan tek dosya. |
+| `vites/hooks/display.ts` | Blok için saf fonksiyonlar: model adı, hedef kısaltma, araç çağrısından hedef, döngü kayıtları, satırlar. |
 | `vites/hooks/logic.ts` | Saf fonksiyonlar: sınıflandırıcı cevabını okuma, kelime kuralları (İngilizce ve Türkçe), kısa cevap tespiti, model eşleme, vites numarası ve Türkçe efor adları. |
 | `vites/hooks/gear.ts` | `#etiket` okuma, tavan, geç vites düşürme (tutulan vites ve sayaç). |
 | `vites/hooks/journal.ts` | Seçim günlüğü: kayıt şekli, 500 sınırı, 120 karakter kesiti, listeleme. |
@@ -136,6 +152,7 @@ Testler `claude-code/testing` modülünü kullanır; bu modül yalnızca `claude
 | `vites/hooks/vites.test.ts` | `logic.ts` testleri ve mock motorla uçtan uca testler. |
 | `vites/hooks/gear.test.ts` | Etiket, tavan ve vites düşürme testleri. |
 | `vites/hooks/records.test.ts` | Günlük, token defteri, fiyat ve rapor testleri. |
+| `vites/hooks/display.test.ts` | Model adı, hedef, kayıt ve satır testleri. |
 | `vites/types/index.d.ts` | Eklentinin kendi tipleri ve `$.state` şeması. |
 
 Tasarım dokümanı: `docs/superpowers/specs/2026-11-01-vites-design.md`.

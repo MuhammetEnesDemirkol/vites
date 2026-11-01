@@ -1,6 +1,6 @@
 {
   "name": "vites",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Her prompt için modeli ve eforu otomatik seçer: hızlı işler küçük modele, zor işler güçlü modele. Türkçe arayüz, maliyet tavanı, geç vites düşürme, seçim günlüğü ve tasarruf raporu.",
   "author": {
     "name": "Muhammet Enes Demirkol"

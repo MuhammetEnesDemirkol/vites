@@ -1,4 +1,4 @@
-import type { Effort, GearNumber, LastPick, Level, Line } from '../types'
+import type { Effort, GearNumber, LastPick, Level, Line, PickFlag, PickSource } from '../types'
 
 export const LEVELS: readonly Level[] = ['small', 'everyday', 'strong', 'strongest']
 
@@ -94,7 +94,7 @@ export function gearNumber(level: Level): GearNumber {
   return LEVEL_GEAR[level]
 }
 
-/** The effort's Turkish word for the chip, the status line and the command replies. */
+/** The effort's Turkish word for the chip, the block above the prompt and the command replies. */
 export function effortTr(effort: Effort): string {
   return EFFORT_LABEL[effort]
 }
@@ -284,8 +284,8 @@ export function restoreValue(previous: string, options: readonly string[]): stri
 
 /**
  * The chip's words, shortened on a narrow terminal so the footer never wraps.
- * It only says whether Vites is on; the gear, model and effort in use are on
- * the line under the prompt.
+ * It only says whether Vites is on; the gear, model and effort in use are in
+ * the block above the prompt.
  */
 export function chipLabel(isOn: boolean, columns: number): string {
   const state = isOn ? 'Açık' : 'Kapalı'
@@ -293,13 +293,27 @@ export function chipLabel(isOn: boolean, columns: number): string {
   return columns >= 60 ? ` Vites: ${state} ` : ` V: ${state} `
 }
 
-/**
- * The line pinned under the prompt: the gear, model and effort the last prompt
- * got, as in `3. vites · opus · yüksek`. The engine prefixes the plugin's name,
- * so the text carries no label. Undefined clears the line.
- */
-export function statusLine(isOn: boolean, pick: LastPick | null): string | undefined {
-  if (!isOn || pick === null || !isEffort(pick.effort)) return undefined
+const SOURCES: readonly PickSource[] = ['classifier', 'keywords', 'tag']
+const FLAGS: readonly PickFlag[] = ['capped', 'held', 'dropped', 'tagged']
+const GEARS: readonly GearNumber[] = [1, 2, 3, 4]
 
-  return `${pick.gear}. vites · ${pick.model} · ${effortTr(pick.effort)}`
+/** The last pick as the store kept it. Anything that is not a whole, valid pick reads as null. */
+export function readLastPick(value: unknown): LastPick | null {
+  if (typeof value !== 'object' || value === null) return null
+  const pick = value as Record<string, unknown>
+
+  if (!LEVELS.includes(pick.level as Level) || !isEffort(pick.effort)) return null
+  if (typeof pick.model !== 'string' || typeof pick.isGuess !== 'boolean') return null
+  if (!GEARS.includes(pick.gear as GearNumber) || !SOURCES.includes(pick.source as PickSource)) return null
+  if (!Array.isArray(pick.flags) || !pick.flags.every(flag => FLAGS.includes(flag as PickFlag))) return null
+
+  return {
+    level: pick.level as Level,
+    effort: pick.effort,
+    model: pick.model,
+    isGuess: pick.isGuess,
+    gear: pick.gear as GearNumber,
+    source: pick.source as PickSource,
+    flags: pick.flags as PickFlag[],
+  }
 }

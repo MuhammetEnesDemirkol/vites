@@ -22,8 +22,18 @@ export type LastPick = {
   flags: PickFlag[]
 }
 
+// What one model loop (the main one, or a subagent's) last sent: the model and the effort
+// that went down with the request, and the file or folder its latest tool call named.
+export type LoopInfo = {
+  model: string
+  effort: Effort | null
+  target: string | null
+  at: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    vites: { enabled: boolean; last: LastPick | null }
+    // `loops` is keyed by 'main' or the subagent's id.
+    vites: { enabled: boolean; last: LastPick | null; loops: Record<string, LoopInfo> }
   }
 }

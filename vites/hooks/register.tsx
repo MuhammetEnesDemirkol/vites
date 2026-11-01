@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { ConfigRow, EngineInterface, PromptSubmitInput, Register, TurnStepInput, TurnStepResult } from 'claude-code'
 
-import type { Effort, LastPick, Level, Line, PickFlag, PickSource } from '../types'
+import type { Effort, LastPick, Level, Line, LoopInfo, PickFlag, PickSource } from '../types'
+import { MAIN, buildRows, pruneLoops, sameLoop, sameLoops, targetOf, withLoop } from './display'
 import { DEFAULT_CEILING, DROP_AFTER, INITIAL_GEAR, levelOfLine, nextGear, parseCeiling, parseTags, readGearState } from './gear'
 import type { GearState, Tags } from './gear'
 import { appendEntry, formatJournal, makeSnippet, parseCount, readJournal } from './journal'
@@ -22,9 +23,9 @@ import {
   namedEffort,
   parseEffort,
   parseLevel,
+  readLastPick,
   restoreValue,
   smallestModel,
-  statusLine,
 } from './logic'
 import { PRICE_DATE } from './pricing'
 import { computeReport, daysOf, formatReport, parsePeriod } from './report'
@@ -59,6 +60,8 @@ const FLAG_TR: Record<PickFlag, string> = {
 // $.state drives the chip; $.store is the record that outlives the session.
 const enabled = atom({ plugin: 'vites', key: 'enabled' } as const, false)
 const last = atom({ plugin: 'vites', key: 'last' } as const, null)
+// What each loop (main, or a subagent by id) last sent. Engine state only: nothing here is stored.
+const loops = atom({ plugin: 'vites', key: 'loops' } as const, {})
 
 type Engine = EngineInterface
 
@@ -70,15 +73,6 @@ async function modelRow($: Engine): Promise<ConfigRow | undefined> {
 
 function asText(value: ConfigRow['value']): string {
   return typeof value === 'string' ? value : String(value)
-}
-
-/** Pins the gear, model and effort under the prompt. A failed pin leaves the line as it was. */
-function showLine($: Engine, pick: LastPick | null, isOn: boolean): void {
-  try {
-    $.ui.status(statusLine(isOn, pick))
-  } catch {
-    // The chip still shows the same words.
-  }
 }
 
 async function isEnabled($: Engine): Promise<boolean> {
@@ -140,7 +134,7 @@ async function turnOff($: Engine, restore: boolean): Promise<string> {
   await $.store.delete('gear')
   await update($, enabled, () => false)
   await update($, last, () => null)
-  showLine($, null, false)
+  await $.store.delete('last')
 
   if (!wasOn) return 'Vites zaten kapalı.'
   if (!restore || typeof previous !== 'string') return 'Vites kapalı.'
@@ -319,6 +313,15 @@ async function rawPick($: Engine, text: string, tags: Tags, options: readonly st
   return { level, effort, source: answered === undefined ? 'keywords' : 'classifier' }
 }
 
+/** Keeps the pick for the next session, whose first requests would otherwise go out before any pick. */
+async function keepLast($: Engine, pick: LastPick): Promise<void> {
+  try {
+    await $.store.set('last', pick)
+  } catch {
+    // The pick still rules this session; the next one starts without it.
+  }
+}
+
 /** Keeps the gear state and writes the journal entry. Each on its own, so neither can undo the switch made. */
 async function keepRecords($: Engine, text: string, raw: RawPick, pick: LastPick, state: GearState): Promise<void> {
   try {
@@ -392,7 +395,7 @@ async function pickModel($: Engine, text: string, tags: Tags): Promise<void> {
   await update($, last, () => pick)
   // Read by the person's status bar, which shows the saved effort, not the one sent.
   await $.store.set('effort', effort)
-  showLine($, pick, true)
+  await keepLast($, pick)
   await keepRecords($, text, raw, pick, decision.state)
 }
 
@@ -436,6 +439,60 @@ async function savedEffort($: Engine): Promise<string | undefined> {
   }
 }
 
+/**
+ * Notes what a loop (main, or a subagent by its id) is sending: the request's model and the
+ * effort that goes down with it, which is Vites's rewrite when it made one. A new turn's
+ * first step starts with no target. The records of subagents that are gone are dropped.
+ * Never throws: a failure here must not reach the step.
+ */
+async function recordLoop($: Engine, e: TurnStepInput, sent: TurnStepInput['effort']): Promise<void> {
+  try {
+    const key = e.agentId ?? MAIN
+    const before = await read($, loops)
+    const previous = before[key]
+    const info: LoopInfo = {
+      model: e.model,
+      effort: isEffort(sent) ? sent : null,
+      target: e.index === 0 ? null : (previous?.target ?? null),
+      at: Date.now(),
+    }
+    const hasOthers = Object.keys(before).some(other => other !== MAIN && other !== key)
+    const agents = hasOthers ? await $.agent.list() : []
+    const after = pruneLoops(withLoop(before, key, info), agents, key)
+
+    if (previous !== undefined && sameLoop(previous, info) && sameLoops(before, after)) return
+    await update($, loops, current => pruneLoops(withLoop(current, key, info), agents, key))
+  } catch {
+    // The display falls behind by a step; the request goes out as it was.
+  }
+}
+
+/** Notes the file or folder a tool call names, on the loop that made it. Bash clears it; an unknown tool changes nothing. */
+async function recordTarget($: Engine, tool: string, args: Readonly<Record<string, unknown>>, agentId: string | undefined): Promise<void> {
+  try {
+    const target = targetOf(tool, args)
+    const key = agentId ?? MAIN
+    if (target === undefined || (await read($, loops))[key] === undefined) return
+
+    await update($, loops, current => {
+      const found = current[key]
+
+      return found === undefined || found.target === target ? current : withLoop(current, key, { ...found, target })
+    })
+  } catch {
+    // A target that is not noted leaves the old one on screen; the call goes on.
+  }
+}
+
+/** The cwd for shortening paths; undefined when the engine will not say. */
+async function cwdOf($: Engine): Promise<string | undefined> {
+  try {
+    return await $.session.cwd()
+  } catch {
+    return undefined
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
@@ -452,8 +509,21 @@ export const register: Register = on => {
         await update($, enabled, () => true)
         await resetGear($)
       }
+      // The pick of the last session, so the first requests of this one already go out at its effort.
+      // A stored value that is not a whole pick reads as none.
+      if (await isEnabled($)) {
+        const pick = readLastPick(await $.store.get('last'))
+        await update($, last, () => pick)
+      }
     } catch {
       // The command or the chip may be missing this session; prompts still go through.
+    }
+
+    // The line under the prompt that older versions pinned is gone; an old pin goes away.
+    try {
+      $.ui.status(undefined)
+    } catch {
+      // A pin that stays is only stale text.
     }
 
     return next(e)
@@ -513,14 +583,23 @@ export const register: Register = on => {
   // subagent otherwise, so that marker (not the model line) tells the two apart.
   on('turn.step', async function* ($, e, next) {
     const effort = e.effort !== undefined ? await effortToSend($) : undefined
+    const sent = effort === undefined || effort === e.effort ? e : { ...e, effort }
+    await recordLoop($, e, sent.effort)
 
-    const result = yield* next(effort === undefined || effort === e.effort ? e : { ...e, effort })
+    const result = yield* next(sent)
     await recordStep($, e, result)
 
     return result
   }).catch(async function* ($, e, next) {
     return yield* next(e)
   })
+
+  // The target of the loop's latest file or search call, for the block above the prompt.
+  on('tool.call', async ($, e, next) => {
+    await recordTarget($, e.tool, e as Readonly<Record<string, unknown>>, e.agentId)
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   // An effort set by hand wins, as a model picked by hand does. A bare /effort
   // opens a menu that can be cancelled, so it counts only if the saved effort moved.
@@ -544,6 +623,38 @@ export const register: Register = on => {
     }
 
     return result
+  }).catch(($, e, next) => next(e))
+
+  // One row for the main loop and one for each subagent at work: the model and effort going
+  // down with its requests, and the file or folder it is on. A survey is never covered.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    try {
+      if (e.props.hasSurvey) return next(e)
+      const records = await read($, loops)
+      if (records[MAIN] === undefined) return next(e)
+
+      const pick = (await isEnabled($)) ? await read($, last) : null
+      const rows = buildRows({ loops: records, agents: await $.agent.list(), gear: pick === null ? null : pick.gear, cwd: await cwdOf($) })
+      const { Box, Text } = $.ui.resolve(e)
+
+      return (
+        <Box flexDirection="column">
+          {rows.map(row => (
+            <Text wrap="truncate-end">
+              <Text color={row.kind === 'main' ? 'claude' : 'suggestion'}>{`${row.kind === 'main' ? '●' : '↳'} ${row.label}`}</Text>
+              <Text color="text">{`  ${row.model}`}</Text>
+              <Text color="inactive">{' · '}</Text>
+              <Text color="text">{row.effort}</Text>
+              {row.gear !== null && <Text color="inactive">{' · '}</Text>}
+              {row.gear !== null && <Text color="text">{row.gear}</Text>}
+              {row.target !== null && <Text color="inactive">{` › ${row.target}`}</Text>}
+            </Text>
+          ))}
+        </Box>
+      )
+    } catch {
+      return next(e)
+    }
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'SessionMode' }, async ($, e) => {
